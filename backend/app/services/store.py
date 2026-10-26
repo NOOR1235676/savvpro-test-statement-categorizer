@@ -76,15 +76,37 @@ class Store:
             key = merchant_key(row.result.transaction.description)
             self._apply(row, category)
             updated = 0
-            if key:
+            txn = row.result.transaction
+
+            # Learn only ordinary outgoing merchant expenses.
+            # Never propagate incoming credits, refunds or transfers.
+            can_learn = (
+                bool(key)
+                and txn.is_valid
+                and txn.amount is not None
+                and txn.amount > 0
+                and category in SPEND_RULES
+                and not any(
+                    word in normalize(txn.description)
+                    for word in (
+                        "REFUND", "REVERSAL", "CHARGEBACK",
+                        "TRANSFER TO", "TRANSFER FROM", "OWN ACCOUNT",
+                    )
+                )
+            )
+
+            if can_learn:
                 self.memory[key] = category
                 for other_id, other in session.rows.items():
+                    other_txn = other.result.transaction
                     if (
                         other_id != row_id
                         and other.result.needs_review
                         and not other.user_corrected
-                        and other.result.transaction.is_valid
-                        and merchant_key(other.result.transaction.description) == key
+                        and other_txn.is_valid
+                        and other_txn.amount is not None
+                        and other_txn.amount > 0
+                        and merchant_key(other_txn.description) == key
                     ):
                         self._apply(other, category)
                         updated += 1

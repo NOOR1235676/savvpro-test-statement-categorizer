@@ -75,3 +75,24 @@ def test_short_keyword_needs_whole_word():
 def test_user_correction_memory_wins():
     r = categorize(tx("JOES CAFE 9921", "12.50"), {"JOES CAFE": "Meals"})
     assert r.category == "Meals" and r.confidence == 1.0 and not r.needs_review
+
+
+def test_refund_not_overridden_by_merchant_memory():
+    r = categorize(
+        tx("ADOBE REFUND", "-54.99"),
+        {"ADOBE REFUND": "Software"},
+    )
+    assert r.category == "Refund"
+
+
+def test_incoming_payment_not_overridden_by_memory():
+    r = categorize(
+        tx("AUTOPAY PAYMENT THANK YOU", "-750"),
+        {"AUTOPAY PAYMENT": "Software"},
+    )
+    assert r.category == "Transfer"
+
+
+def test_outgoing_refund_keyword_requires_review():
+    r = categorize(tx("ADOBE REFUND ADJUSTMENT", "54.99"))
+    assert r.needs_review

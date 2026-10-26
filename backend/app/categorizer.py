@@ -69,12 +69,10 @@ def categorize(txn: Transaction, memory: dict[str, str] | None = None) -> Catego
         detail = "; ".join(txn.errors) or "missing amount"
         return _result(txn, NEEDS_REVIEW, 0.0, f"Row could not be read: {detail}")
 
-    key = merchant_key(txn.description)
-    if memory and key in memory:
-        return _result(txn, memory[key], 1.0, "Learned from your earlier correction", "memory")
-
     text = normalize(txn.description)
 
+    # Money direction and explicit financial events take precedence
+    # over user-learned merchant categories.
     if txn.amount < 0:  # money IN
         for w in REFUND_WORDS:
             if _find(w, text):
@@ -87,9 +85,24 @@ def categorize(txn: Transaction, memory: dict[str, str] | None = None) -> Catego
                 return _result(txn, "Credit", 0.9, "Cashback or reward credit", w)
         return _result(txn, NEEDS_REVIEW, 0.3, "Unknown credit: could be refund or something else")
 
+    # An outgoing row labeled as a refund/reversal is suspicious.
+    # Do not silently count it as an ordinary business expense.
+    if any(_find(w, text) for w in REFUND_WORDS):
+        return _result(
+            txn, NEEDS_REVIEW, 0.2,
+            "Outgoing refund/reversal requires manual verification"
+        )
+
     for w in TRANSFER_WORDS:  # money OUT
         if _find(w, text):
             return _result(txn, "Transfer", 0.95, "Transfer between accounts, not spending", w)
+
+    key = merchant_key(txn.description)
+    if memory and key in memory:
+        return _result(
+            txn, memory[key], 1.0,
+            "Learned from your earlier correction", "memory"
+        )
 
     hits = []
     for cat, kws in SPEND_RULES.items():

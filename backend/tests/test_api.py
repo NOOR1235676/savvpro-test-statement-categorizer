@@ -170,3 +170,57 @@ def test_csv_formula_injection_guard():
 def test_categories_endpoint():
     cats = client.get("/api/categories").json()
     assert "Software" in cats and "Needs Review" not in cats
+
+
+def test_correction_does_not_propagate_to_incoming_transaction():
+    csv_data = (
+        "date,description,amount,currency\n"
+        "2026-01-01,JOES CAFE 1001,12.50,USD\n"
+        "2026-01-02,JOES CAFE 1002,-12.50,USD\n"
+    )
+    r = client.post(
+        "/api/uploads",
+        files={"file": ("test.csv", csv_data.encode(), "text/csv")},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    outgoing = next(t for t in body["transactions"] if Decimal(t["amount"]) > 0)
+    incoming = next(t for t in body["transactions"] if Decimal(t["amount"]) < 0)
+
+    corrected = client.patch(
+        f"/api/uploads/{body['upload_id']}/transactions/{outgoing['id']}",
+        json={"category": "Meals"},
+    )
+    assert corrected.status_code == 200
+
+    rows = client.get(f"/api/uploads/{body['upload_id']}").json()["transactions"]
+    credit = next(t for t in rows if t["id"] == incoming["id"])
+    assert credit["category"] == "Needs Review"
+
+
+def test_incoming_correction_does_not_train_outgoing_merchant_memory():
+    csv_data = (
+        "date,description,amount,currency\n"
+        "2026-01-01,JOES CAFE 1001,-12.50,USD\n"
+    )
+    first = client.post(
+        "/api/uploads",
+        files={"file": ("credit.csv", csv_data.encode(), "text/csv")},
+    ).json()
+    row = first["transactions"][0]
+
+    corrected = client.patch(
+        f"/api/uploads/{first['upload_id']}/transactions/{row['id']}",
+        json={"category": "Refund"},
+    )
+    assert corrected.status_code == 200
+
+    second_csv = (
+        "date,description,amount,currency\n"
+        "2026-01-02,JOES CAFE 1002,12.50,USD\n"
+    )
+    second = client.post(
+        "/api/uploads",
+        files={"file": ("debit.csv", second_csv.encode(), "text/csv")},
+    ).json()
+    assert second["transactions"][0]["category"] == "Needs Review"
