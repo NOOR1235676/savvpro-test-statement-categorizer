@@ -1,82 +1,112 @@
-﻿import re
-from dataclasses import dataclass
+﻿"""Rule-based categorizer (the "brain"). No AI model is used for decisions.
+
+Sign convention comes from the parser: amount > 0 is money OUT, amount < 0 is money IN.
+"""
+import re
+
+from app.models import CategorizedTransaction, Transaction
 
 REVIEW_THRESHOLD = 0.75
+NEEDS_REVIEW = "Needs Review"
 
-
-@dataclass
-class Txn:
-    date: str
-    description: str
-    amount: float  # negative = money out, positive = money in
-
-
-@dataclass
-class Result:
-    category: str
-    confidence: float
-    reason: str
-    needs_review: bool
-
-
-RULES = {
-    "Software": ["ADOBE", "GITHUB", "FIGMA", "NOTION", "SLACK", "AWS", "DIGITALOCEAN", "OPENAI"],
-    "Travel": ["UBER", "CAREEM", "PIA", "AIRBLUE", "BOLT"],
-    "Meals": ["KFC", "MCDONALD", "STARBUCKS", "FOODPANDA", "CAFE"],
-    "Office": ["DARAZ", "STAPLES", "OFFICE DEPOT"],
-    "Fees": ["BANK FEE", "SERVICE CHARGE", "ANNUAL FEE"],
+SPEND_RULES: dict[str, list[str]] = {
+    "Software": [
+        "ADOBE", "GITHUB", "FIGMA", "NOTION", "SLACK", "OPENAI", "GSUITE",
+        "GOOGLE WORKSPACE", "ZOOM", "DROPBOX", "HETZNER", "NAMECHEAP",
+        "DIGITALOCEAN", "AWS",
+    ],
+    "Travel": ["UBER", "LYFT", "CAREEM", "SHELL OIL", "BOOKING.COM", "AIRBNB", "AIRLINES"],
+    "Meals": ["UBER EATS", "DOORDASH", "FOODPANDA", "STARBUCKS", "COFFEE", "MCDONALDS", "KFC", "RESTAURANT"],
+    "Office": ["COWORKING", "STAPLES", "OFFICE DEPOT"],
+    "Education": ["COURSERA", "UDEMY"],
+    "Contractors": ["FIVERR", "UPWORK"],
+    "Fees & Interest": ["FOREIGN TRANSACTION FEE", "INTEREST CHARGE", "LATE FEE", "ANNUAL FEE"],
 }
-TRANSFER_WORDS = ["TRANSFER TO", "TRANSFER FROM", "OWN ACCOUNT", "SAVINGS", "CARD PAYMENT"]
-INCOME_WORDS = ["PAYONEER", "FIVERR", "UPWORK", "INVOICE", "SALARY"]
+
+# Merchants where the same name can mean different things: never guess.
+AMBIGUOUS: dict[str, str] = {
+    "AMZN MKTP": "Marketplace purchase: could be office supplies or personal",
+    "AMAZON": "Marketplace purchase: could be office supplies or personal",
+    "APPLE.COM/BILL": "Apple billing: could be a subscription or hardware",
+    "WALMART": "General store: mixed purchases, needs a human decision",
+}
+
+TRANSFER_WORDS = ["TRANSFER TO", "TRANSFER FROM", "OWN ACCOUNT"]
+PAYMENT_WORDS = ["PAYMENT THANK YOU", "AUTOPAY", "PAYMENT RECEIVED"]
 REFUND_WORDS = ["REFUND", "REVERSAL", "CHARGEBACK"]
+CASHBACK_WORDS = ["CASHBACK", "REWARD"]
 
 
 def normalize(desc: str) -> str:
-    d = desc.upper()
-    d = re.sub(r"[*#]", " ", d)
-    d = re.sub(r"\d{3,}", " ", d)  # reference numbers
-    return re.sub(r"\s+", " ", d).strip()
+    text = re.sub(r"[*#]", " ", desc.upper())
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def merchant_key(desc: str) -> str:
-    return " ".join(normalize(desc).split()[:2])
+    """Stable key used to remember user corrections (digits and refs removed)."""
+    tokens = [t for t in normalize(desc).split() if not any(c.isdigit() for c in t)]
+    return " ".join(tokens[:2])
 
 
-def _has(word: str, text: str) -> bool:
-    # short keywords must match as whole words (PIA must not match PIANO)
-    pattern = rf"\b{re.escape(word)}\b" if len(word) <= 4 else rf"\b{re.escape(word)}"
-    return re.search(pattern, text) is not None
+def _find(keyword: str, text: str) -> bool:
+    # whole-word start, and no letter right after: ZOOM must not match ZOOMER
+    return re.search(rf"(?<![A-Z0-9]){re.escape(keyword)}(?![A-Z])", text) is not None
 
 
-def categorize(txn: Txn, memory: dict[str, str] | None = None) -> Result:
-    d = normalize(txn.description)
+def _result(txn, category, confidence, reason, rule=None) -> CategorizedTransaction:
+    return CategorizedTransaction(
+        transaction=txn,
+        category=category,
+        confidence=confidence,
+        reason=reason,
+        needs_review=category == NEEDS_REVIEW or confidence < REVIEW_THRESHOLD,
+        matched_rule=rule,
+    )
 
-    # 1. user corrections win (learned memory)
+
+def categorize(txn: Transaction, memory: dict[str, str] | None = None) -> CategorizedTransaction:
+    if not txn.is_valid:
+        detail = "; ".join(txn.errors) or "missing amount"
+        return _result(txn, NEEDS_REVIEW, 0.0, f"Row could not be read: {detail}")
+
     key = merchant_key(txn.description)
     if memory and key in memory:
-        return Result(memory[key], 1.0, "Learned from your earlier correction", False)
+        return _result(txn, memory[key], 1.0, "Learned from your earlier correction", "memory")
 
-    # 2. transfers are not spending
-    if any(w in d for w in TRANSFER_WORDS):
-        return Result("Transfer", 0.95, "Internal transfer, excluded from spending", False)
+    text = normalize(txn.description)
 
-    # 3. refunds: money back, NOT income
-    if txn.amount > 0 and any(w in d for w in REFUND_WORDS):
-        return Result("Refund", 0.9, "Refund keyword on a credit", False)
+    if txn.amount < 0:  # money IN
+        for w in REFUND_WORDS:
+            if _find(w, text):
+                return _result(txn, "Refund", 0.9, "Money back, not income", w)
+        for w in PAYMENT_WORDS:
+            if _find(w, text):
+                return _result(txn, "Transfer", 0.95, "Card payment, not spending", w)
+        for w in CASHBACK_WORDS:
+            if _find(w, text):
+                return _result(txn, "Credit", 0.9, "Cashback or reward credit", w)
+        return _result(txn, NEEDS_REVIEW, 0.3, "Unknown credit: could be refund or something else")
 
-    # 4. income
-    if txn.amount > 0:
-        if any(_has(w, d) for w in INCOME_WORDS):
-            return Result("Income", 0.9, "Known income source", False)
-        return Result("Needs Review", 0.4, "Unknown credit: could be income or refund", True)
+    for w in TRANSFER_WORDS:  # money OUT
+        if _find(w, text):
+            return _result(txn, "Transfer", 0.95, "Transfer between accounts, not spending", w)
 
-    # 5. spending rules
-    hits = {c: [k for k in kws if _has(k, d)] for c, kws in RULES.items()}
-    hits = {c: h for c, h in hits.items() if h}
-    if len(hits) == 1:
-        cat, kw = next(iter(hits.items()))
-        return Result(cat, 0.9, f"Matched '{kw[0]}'", False)
-    if len(hits) > 1:
-        return Result("Needs Review", 0.5, f"Ambiguous: matches {', '.join(hits)}", True)
+    hits = []
+    for cat, kws in SPEND_RULES.items():
+        for kw in kws:
+            if _find(kw, text):
+                hits.append((len(kw), cat, kw, 0.9, f"Matched '{kw}'"))
+    for kw, note in AMBIGUOUS.items():
+        if _find(kw, text):
+            hits.append((len(kw), NEEDS_REVIEW, kw, 0.4, note))
 
-    return Result("Needs Review", 0.2, "No rule matched", True)
+    if not hits:
+        return _result(txn, NEEDS_REVIEW, 0.2, "No rule matched")
+
+    best = max(h[0] for h in hits)  # most specific (longest) keyword wins
+    top = [h for h in hits if h[0] == best]
+    if len({h[1] for h in top}) > 1:
+        names = ", ".join(sorted({h[1] for h in top}))
+        return _result(txn, NEEDS_REVIEW, 0.5, f"Ambiguous: matches {names}")
+    _, cat, kw, conf, reason = top[0]
+    return _result(txn, cat, conf, reason, kw)
