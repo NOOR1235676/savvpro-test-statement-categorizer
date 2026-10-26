@@ -58,3 +58,12 @@ Supporting screenshots or exported usage records should be attached to the repos
 ## Responsibility
 
 AI-assisted code and documentation were reviewed through local testing. Final implementation and submission remain the candidate's responsibility.
+
+## Supporting AI Conversation Evidence
+
+The following original screenshots document AI-assisted development activities:
+
+1. [Testing and verification conversation](docs/ai-evidence/01-real-testing-conversation.png)
+2. [Documentation assistance conversation](docs/ai-evidence/02-real-documentation-conversation.png)
+
+These are excerpts of actual ChatGPT conversations, not token-usage reports. Exact token counts were not available and have not been estimated or fabricated.
