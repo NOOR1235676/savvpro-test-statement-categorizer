@@ -3,3 +3,5 @@ node_modules/
 __pycache__/
 .pytest_cache/
 .env
+
+docs/ai-evidence/chat-transcript.txt
