@@ -19,7 +19,7 @@ OpenAI ChatGPT was used as a development assistant.
 
 The application was tested locally.
 
-Backend: 66 pytest tests passed.
+Backend: 71 pytest tests passed (latest verified run).
 
 Frontend: Vite production build passed.
 
@@ -45,9 +45,20 @@ All transaction classification decisions are performed by application code and e
 
 ## Token Usage
 
-Exact cumulative token counts were not available from the ChatGPT session.
+An approximate token count was calculated using OpenAI's
+`tiktoken` Python library with the `o200k_base` encoding.
 
-No token counts have been fabricated.
+- Collected transcript size: 62,973 characters
+- Approximate token count: **16,716 tokens**
+- Method: Tokenization of the collected ChatGPT conversation text
+  containing prompts and responses.
+- Scope: This figure represents the collected transcript, not
+  necessarily every AI interaction during development.
+- Limitation: Hidden reasoning and other unrecorded token usage
+  are not included.
+
+The estimate is based on collected conversation text rather than
+an invented usage figure.
 
 ## Logs and Screenshots
 
@@ -66,4 +77,4 @@ The following original screenshots document AI-assisted development activities:
 1. [Testing and verification conversation](docs/ai-evidence/01-real-testing-conversation.png)
 2. [Documentation assistance conversation](docs/ai-evidence/02-real-documentation-conversation.png)
 
-These are excerpts of actual ChatGPT conversations, not token-usage reports. Exact token counts were not available and have not been estimated or fabricated.
+These are excerpts of actual ChatGPT conversations, not token-usage reports. An approximate count of 16,716 tokens was calculated from the collected conversation transcript using tiktoken.
